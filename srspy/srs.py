@@ -6,6 +6,10 @@ Author: dsholes
 Date: November 8, 2018
 Version: 0.1
 
+Credits: 
+- Tom Irvine wrote a similar python module, and I am borrowing the idea to use scipy.signal.lfilter
+- David Smallwood developed the algorithm
+
 """
 
 from scipy.signal import lfilter
@@ -25,19 +29,58 @@ AX_LABEL_FONT_DICT = {'size':14}
 AX_TITLE_FONT_DICT = {'size':16}
 
 def read_tsv(path_to_tsv):
-    pass
+    """
+    
+    NOTE ON DATA FORMAT:
+        - TSV must be 2 columns
+            - Time (in sec) is first column
+            - Accel (in G's) is second column
+        - No column headers (i.e. first row should be data)
+        
+    """
+    
+    input_data = path_to_tsv
+    cols = [0,1]
+    col_names = ['time_s', 'accel_g']
+    input_df = pd.read_csv(input_data,
+                           sep = '\t',
+                           header = None,
+                           names = col_names,
+                           usecols = cols)
+    return read_dataframe(input_df)
+    
 
 def read_csv(path_to_csv):
-    pass
+    """
     
-def read_dataframe(input_df, remove_bias = False):
+    NOTE ON DATA FORMAT:
+        - CSV must be 2 columns
+            - Time (in sec) is first column
+            - Accel (in G's) is second column
+        - No column headers (i.e. first row should be data)
+        
+    """
+    
+    input_data = path_to_csv
+    cols = [0,1]
+    col_names = ['time_s', 'accel_g']
+    input_df = pd.read_csv(input_data,
+                           header = None,
+                           names = col_names,
+                           usecols = cols)
+    return read_dataframe(input_df)
+    
+def read_dataframe(input_df):
     '''
     Takes pandas DataFrame object
         - Time (in sec) is first column
         - Accel (in G's) is second column
     '''
-
-    srs_object = ShockResponseSpectrum(input_df, remove_bias)
+    try:
+        input_df.apply(pd.to_numeric)
+    except ValueError:
+        raise Exception("Input data file should not have column headers")
+    srs_object = ShockResponseSpectrum(input_df)
     
     return srs_object
 
@@ -67,6 +110,11 @@ class ShockResponseSpectrum:
         self.input_vel_mps = integrate.cumtrapz(self.input_accel_mps2, self.input_time_s,initial=0.)
         
     def run_srs_analysis(self, fn_array, Q = 10, remove_bias = False):
+        """
+        Review Smallwood method in his paper:
+            - 'AN IMPROVED RECURSIVE FORMULA FOR CALCULATING SHOCK RESPONSE SPECTRA'
+            - http://www.vibrationdata.com/ramp_invariant/DS_SRS1.pdf
+        """
         self.Q = Q
         self.fn_array = fn_array
         self.remove_bias = remove_bias
@@ -77,8 +125,6 @@ class ShockResponseSpectrum:
             self.input_vel_mps = integrate.cumtrapz(self.input_accel_mps2, self.input_time_s,initial=0.)
             print('Input data has been modified to remove sensor bias (offset)...')
         
-        # Calculate Smallwood coefficients from:
-        #      - http://www.vibrationdata.com/ramp_invariant/DS_SRS1.pdf
         # Should I give user access to the following coefficients??
         damp = 1./(2.*self.Q)
         T = np.diff(self.input_time_s).mean() # sample interval
@@ -106,6 +152,13 @@ class ShockResponseSpectrum:
             self.pos_accel[i] = output_accel_g.max()
             self.neg_accel[i] = np.abs(output_accel_g.min())
             
+    def export_srs_to_csv(self, filename):
+        data_array = np.array([self.fn_array,self.pos_accel,self.neg_accel]).T
+        cols = ['Natural Frequency (Hz)', 'Peak Positive Accel (G)', 'Peak Negative Accel (G)']
+        srs_output_df = pd.DataFrame(data = data_array,
+                                     columns = cols)
+        srs_output_df.to_csv(filename,index=False)
+    
     def _make_accel_subplot(self,ax):
         ax.plot(self.input_time_s, self.input_accel_g,
                 label = 'Accel',
@@ -135,7 +188,6 @@ class ShockResponseSpectrum:
         return ax
     
     def _make_srs_subplot(self,ax, requirement):
-        self.protocol_fn, self.protocol_accel = requirement
         
         ax.loglog(self.fn_array,self.pos_accel,
                   label='Positive',
@@ -145,10 +197,12 @@ class ShockResponseSpectrum:
                    label='Negative',
                    color=COLORS[0],
                    linestyle='--')
-        ax.loglog(self.protocol_fn, self.protocol_accel,
-                  color=COLORS[3],
-                  linewidth=2,
-                  label='Requirement')
+        if requirement is not None:
+            self.protocol_fn, self.protocol_accel = requirement
+            ax.loglog(self.protocol_fn, self.protocol_accel,
+                      color=COLORS[3],
+                      linewidth=2,
+                      label='Requirement')
 
         leg = ax.legend(fancybox=True,
                         framealpha=1,
@@ -160,11 +214,8 @@ class ShockResponseSpectrum:
         ax.set_title('Acceleration Shock Response Spectrum (Q={0:.1f})'.format(self.Q), 
                       fontdict=AX_TITLE_FONT_DICT)
         return ax
-    
-    def export_srs_to_csv(self):
-        pass
             
-    def plot_results(self, requirement):
+    def plot_results(self, requirement = None, filename = None):
         fig = plt.figure()
 
         gs = gridspec.GridSpec(3,4)
@@ -183,21 +234,26 @@ class ShockResponseSpectrum:
         ax2 = self._make_srs_subplot(ax2, requirement)
         
         fig.set_size_inches(10,10)
-        
-        return
+        if filename is not None:
+            fig.savefig(filename,dpi=200)
     
-    def plot_input_accel(self):
+    def plot_input_accel(self, filename = None):
         fig, ax = plt.subplots()
         ax = self._make_accel_subplot(ax)
         fig.set_size_inches(10,7)
+        if filename is not None:
+            fig.savefig(filename,dpi=200)
         
-    def plot_input_vel(self):
+    def plot_input_vel(self, filename = None):
         fig, ax = plt.subplots()
         ax = self._make_vel_subplot(ax)
         fig.set_size_inches(10,7)
+        if filename is not None:
+            fig.savefig(filename,dpi=200)
         
-    def plot_srs(self, requirement):
+    def plot_srs(self, requirement = None, filename = None):
         fig, ax = plt.subplots()
         ax = self._make_srs_subplot(ax, requirement)
         fig.set_size_inches(10,7)
-        return
+        if filename is not None:
+            fig.savefig(filename,dpi=200)
